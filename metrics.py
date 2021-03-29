@@ -55,9 +55,8 @@ def psnr_per_frame(target_video, out_video):
 
 def lpips_image(generated_image, real_image):
   global lpips_model
-  if not lpips_model:
-    lpips_model = hub.load('@neural-rendering/lpips/distance/1')
-  return lpips_model(generated_image, real_image)
+  result = 0.0
+  return result
 
 
 def lpips(video_1, video_2):
@@ -81,7 +80,7 @@ def fvd_preprocess(videos, target_resolution):
 def create_id3_embedding(videos):
   """Get id3 embeddings."""
   global i3d_model
-  module_spec = '@deepmind/kinetics-400/i3d/1'
+  module_spec = 'https://tfhub.dev/deepmind/i3d-kinetics-400/1'
 
   if not i3d_model:
     base_model = hub.load(module_spec)

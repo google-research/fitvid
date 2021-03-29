@@ -32,14 +32,14 @@ from flax.training import checkpoints
 import jax
 from jax import lax
 import jax.numpy as jnp
-from jaxido import data
-from jaxido import models
-from jaxido import utils
-from jaxido.metrics import fvd
-from jaxido.metrics import lpips
-from jaxido.metrics import psnr
-from jaxido.metrics import psnr_per_frame
-from jaxido.metrics import ssim
+import data
+import models
+import utils
+from metrics import fvd
+from metrics import lpips
+from metrics import psnr
+from metrics import psnr_per_frame
+from metrics import ssim
 import numpy as np
 import tensorflow.compat.v2 as tf
 
@@ -53,7 +53,6 @@ flags.DEFINE_integer('n_future', 10, 'Number of future frames.')
 flags.DEFINE_integer('training_steps', 10000000, 'Number of training steps.')
 flags.DEFINE_integer('log_every', 1000, 'How frequently log.')
 flags.DEFINE_integer('eval_every', 10000, 'How frequently eval.')
-flags.DEFINE_bool('omnistaging', True, 'Whether to use omnistaging mode.')
 
 
 MODEL_CLS = models.EncDec
@@ -251,8 +250,6 @@ def train():
 
 def main(argv):
   del argv  # Unused
-  if not FLAGS.omnistaging:
-    jax.config.disable_omnistaging()
   tf.enable_v2_behavior()
   # make sure tf does not allocate gpu memory
   tf.config.experimental.set_visible_devices([], 'GPU')

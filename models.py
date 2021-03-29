@@ -23,8 +23,8 @@ from flax.nn import initializers
 import jax
 import jax.numpy as jnp
 
-from jaxido import nvae
-from jaxido import utils
+import nvae
+import utils
 
 
 class MultiGaussianLSTM(nn.Module):

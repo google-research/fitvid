@@ -26,12 +26,12 @@ from flax import jax_utils
 from flax.metrics import tensorboard
 from flax.training import checkpoints
 import jax
-from jaxido import utils
-from jaxido.train import evaluate
-from jaxido.train import get_data
-from jaxido.train import init_model_state
-from jaxido.train import MODEL_CLS
-from jaxido.train import write_summaries
+import utils
+from train import evaluate
+from train import get_data
+from train import init_model_state
+from train import MODEL_CLS
+from train import write_summaries
 import numpy as np
 import tensorflow.compat.v2 as tf
 
@@ -69,8 +69,6 @@ def eval_model():
 
 def main(argv):
   del argv  # Unused
-  if not FLAGS.omnistaging:
-    jax.config.disable_omnistaging()
   tf.enable_v2_behavior()
   # make sure tf does not allocate gpu memory
   tf.config.experimental.set_visible_devices([], 'GPU')

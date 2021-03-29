@@ -49,6 +49,7 @@ def load_dataset_robonet(batch_size, video_len, is_train):
 
   local_device_count = jax.local_device_count()
   dataset_builder = tfds.builder('robonet/robonet_64')
+  dataset_builder.download_and_prepare()
   num_examples = dataset_builder.info.splits['train'].num_examples
   split_size = num_examples // jax.host_count()
   start = jax.host_id() * split_size
