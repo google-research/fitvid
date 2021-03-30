@@ -55,7 +55,7 @@ def psnr_per_frame(target_video, out_video):
 
 def lpips_image(generated_image, real_image):
   global lpips_model
-  result = 0.0
+  result = tf.convert_to_tensor(0.0)
   return result
 
 
