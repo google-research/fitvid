@@ -32,14 +32,14 @@ from flax.training import checkpoints
 import jax
 from jax import lax
 import jax.numpy as jnp
-import data
-import models
-import utils
-from metrics import fvd
-from metrics import lpips
-from metrics import psnr
-from metrics import psnr_per_frame
-from metrics import ssim
+from fitvid import data
+from fitvid import models
+from fitvid import utils
+from fitvid.metrics import fvd
+from fitvid.metrics import lpips
+from fitvid.metrics import psnr
+from fitvid.metrics import psnr_per_frame
+from fitvid.metrics import ssim
 import numpy as np
 import tensorflow.compat.v2 as tf
 
@@ -52,14 +52,12 @@ flags.DEFINE_integer('n_past', 2, 'Number of past frames.')
 flags.DEFINE_integer('n_future', 10, 'Number of future frames.')
 flags.DEFINE_integer('training_steps', 10000000, 'Number of training steps.')
 flags.DEFINE_integer('log_every', 1000, 'How frequently log.')
-flags.DEFINE_integer('eval_every', 10000, 'How frequently eval.')
 
 
-MODEL_CLS = models.EncDec
+MODEL_CLS = models.FitVid
 
 
 def additional_metrics(metrics, gt, out_video):
-  metrics['graphs/psnr'] = psnr_per_frame(gt, out_video)
   metrics['metrics/psnr'] = psnr(gt, out_video)
   metrics['metrics/ssim'] = ssim(gt, out_video)
   metrics['metrics/fvd'] = fvd(gt, out_video)
@@ -149,10 +147,8 @@ def get_log_directories():
   output_dir = FLAGS.output_dir
   model_dir = os.path.join(output_dir, 'model')
   log_dir = os.path.join(output_dir, 'train')
-  eval_log_dir = os.path.join(output_dir, 'eval')
   summary_writer = tensorboard.SummaryWriter(log_dir)
-  eval_summary_writer = tensorboard.SummaryWriter(eval_log_dir)
-  return model_dir, summary_writer, eval_summary_writer
+  return model_dir, summary_writer
 
 
 def get_data(training):
@@ -178,21 +174,23 @@ def init_model_state(rng_key, model, sample):
 
 def evaluate(rng_key, state, model, data_itr, eval_steps):
   """Evaluates the model on the entire dataset."""
-  all_out_videos, all_gt_videos, all_metrics = [], [], []
+  all_metrics = []
   for _ in range(eval_steps):
     batch = next(data_itr)
     gt, out_video, metrics = eval_step(model, batch, state, rng_key)
-    all_out_videos.append(jax_utils.unreplicate(out_video))
-    all_gt_videos.append(jax_utils.unreplicate(gt))
-    all_metrics.append(jax_utils.unreplicate(metrics))
 
-  metrics, gt, out_video = None, None, None
+    def get_all(x):
+      return utils.get_all_devices(jax_utils.unreplicate(x))
+    out_video = get_all(out_video)
+    gt = get_all(gt)
+    metrics = jax.tree_map(get_all, metrics)
+    metrics = additional_metrics(metrics, gt, out_video)
+    all_metrics.append(metrics)
+
   if jax.host_id() == 0:
-    out_video = np.concatenate(utils.get_all_devices(all_out_videos))
-    gt = np.concatenate(utils.get_all_devices(all_gt_videos))
     metrics = {
         k: np.mean([dic[k] for dic in all_metrics]) for k in all_metrics[0]}
-    metrics = additional_metrics(metrics, gt, out_video)
+    metrics['graphs/psnr'] = psnr_per_frame(gt, out_video)
   return metrics, gt, out_video
 
 
@@ -201,16 +199,14 @@ def train():
   rng_key = jax.random.PRNGKey(0)
   training_steps = FLAGS.training_steps
   log_every = FLAGS.log_every
-  eval_every = FLAGS.eval_every
 
-  model_dir, summary_writer, eval_summary_writer = get_log_directories()
-  data_itr, eval_data_itr = get_data(True), get_data(False)
+  model_dir, summary_writer = get_log_directories()
+  data_itr = get_data(True)
 
   batch = next(data_itr)
   sample = utils.get_first_device(batch)
 
   model = MODEL_CLS(n_past=FLAGS.n_past, training=True)
-  eval_model = MODEL_CLS(n_past=FLAGS.n_past, training=False)
 
   state = init_model_state(rng_key, model, sample)
   state = checkpoints.restore_checkpoint(model_dir, state)
@@ -235,15 +231,9 @@ def train():
         out_video = utils.get_all_devices(out_video)
         gt = utils.get_all_devices(batch['video'])[:, 1:]
         train_metrics = additional_metrics(train_metrics, gt, out_video)
+        train_metrics['graphs/psnr'] = psnr_per_frame(gt, out_video)
         write_summaries(summary_writer, train_metrics, step, out_video, gt)
         logging.info('>>> Step: %d Loss: %.4f', step, train_metrics['loss/all'])
-
-    if step % eval_every == 0:
-      metrics, gt, out_vid = evaluate(
-          rng_key, state, eval_model, eval_data_itr,
-          eval_steps=256 // FLAGS.batch_size)  # hacky way of testing all 256
-      if jax.host_id() == 0:
-        write_summaries(eval_summary_writer, metrics, step, out_vid, gt)
 
     batch = next(data_itr)
 

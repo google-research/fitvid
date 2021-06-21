@@ -15,11 +15,81 @@
 """Data."""
 
 import functools
+import random
 
+from fitvid.randaug import randaugment
 from flax import jax_utils
 import jax
-import tensorflow.compat.v2 as tf
+import numpy as np
+import tensorflow as tf  # tf
 import tensorflow_datasets as tfds
+
+
+def rand_crop(seeds, video, width, height, wiggle):
+  """Random crop of a video. Assuming height < width."""
+  x_wiggle = wiggle
+  crop_width = height - wiggle
+  y_wiggle = width - crop_width
+  xx = tf.random.stateless_uniform(
+      [], seed=seeds[0], minval=0, maxval=x_wiggle, dtype=tf.int32)
+  yy = tf.random.stateless_uniform(
+      [], seed=seeds[1], minval=0, maxval=y_wiggle, dtype=tf.int32)
+  return video[:, xx:xx+crop_width, yy:yy+crop_width, :]
+
+
+def rand_aug(seeds, video, num_layers, magnitude):
+  """RandAug for video with the same random seed for all frames."""
+  image_aug = lambda a, x: randaugment(x, num_layers, magnitude, seeds)
+  return tf.scan(image_aug, video)
+
+
+def augment_dataset(dataset, augmentations):
+  """Augment dataset with a list of augmentations."""
+  def augment(seeds, features):
+    video = tf.cast(features['video'], tf.uint8)
+    for aug_fn in augmentations:
+      video = aug_fn(seeds, video)
+    video = tf.image.resize(video, (64, 64), antialias=True)
+    features['video'] = video
+    return features
+
+  randds = tf.data.experimental.RandomDataset(1).batch(2).batch(4)
+  dataset = tf.data.Dataset.zip((randds, dataset))
+  dataset = dataset.map(
+      augment, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+  return dataset
+
+
+def normalize_video(features):
+  features['video'] = tf.cast(features['video'], tf.float32) / 255.0
+  return features
+
+
+def get_iterator(dataset, batch_size, is_train):
+  """"Returns a performance optimized iterator from dataset."""
+  local_device_count = jax.local_device_count()
+  options = tf.data.Options()
+  options.experimental_threading.private_threadpool_size = 48
+  options.experimental_threading.max_intra_op_parallelism = 1
+  dataset = dataset.with_options(options)
+  dataset = dataset.map(normalize_video)
+  dataset = dataset.repeat()
+  if is_train:
+    dataset = dataset.shuffle(batch_size * 64, seed=0)
+  dataset = dataset.batch(batch_size, drop_remainder=True)
+  dataset = dataset.prefetch(32)
+
+  def prepare_tf_data(xs):
+    def _prepare(x):
+      x = x._numpy()
+      return x.reshape((local_device_count, -1) + x.shape[1:])
+    return jax.tree_map(_prepare, xs)
+
+  iterator = map(prepare_tf_data, dataset)
+  iterator = jax_utils.prefetch_to_device(iterator, 2)
+  return iterator
+
+
 
 
 def load_dataset_robonet(batch_size, video_len, is_train):
@@ -47,9 +117,7 @@ def load_dataset_robonet(batch_size, video_len, is_train):
     testfiles = ([x.encode('ascii') for x in testfiles.split('\n') if x])
     return testfiles
 
-  local_device_count = jax.local_device_count()
   dataset_builder = tfds.builder('robonet/robonet_64')
-  dataset_builder.download_and_prepare()
   num_examples = dataset_builder.info.splits['train'].num_examples
   split_size = num_examples // jax.host_count()
   start = jax.host_id() * split_size
@@ -68,19 +136,4 @@ def load_dataset_robonet(batch_size, video_len, is_train):
   dataset = dataset.map(
       extract_features_robonet,
       num_parallel_calls=tf.data.experimental.AUTOTUNE)
-  dataset = dataset.cache()
-  dataset = dataset.repeat()
-  if is_train:
-    dataset = dataset.shuffle(batch_size * 16, seed=0)
-  dataset = dataset.batch(batch_size, drop_remainder=True)
-  dataset = dataset.prefetch(32)
-
-  def prepare_tf_data(xs):
-    def _prepare(x):
-      x = x._numpy()
-      return x.reshape((local_device_count, -1) + x.shape[1:])
-    return jax.tree_map(_prepare, xs)
-
-  iterator = map(prepare_tf_data, dataset)
-  iterator = jax_utils.prefetch_to_device(iterator, 2)
-  return iterator
+  return get_iterator(dataset, batch_size, is_train)

@@ -19,6 +19,7 @@ from __future__ import division
 from __future__ import print_function
 
 import os
+import time
 
 from absl import app
 from absl import flags
@@ -26,12 +27,12 @@ from flax import jax_utils
 from flax.metrics import tensorboard
 from flax.training import checkpoints
 import jax
-import utils
-from train import evaluate
-from train import get_data
-from train import init_model_state
-from train import MODEL_CLS
-from train import write_summaries
+from fitvid import utils
+from fitvid.train import evaluate
+from fitvid.train import get_data
+from fitvid.train import init_model_state
+from fitvid.train import MODEL_CLS
+from fitvid.train import write_summaries
 import numpy as np
 import tensorflow.compat.v2 as tf
 
@@ -51,27 +52,29 @@ def eval_model():
   sample = utils.get_first_device(batch)
 
   model = MODEL_CLS(n_past=FLAGS.n_past, training=False)
-
   state = init_model_state(rng_key, model, sample)
-  state = checkpoints.restore_checkpoint(FLAGS.output_dir, state)
-  state = jax_utils.replicate(state)
 
+  last_checkpoint = int(state.step)
   rng_key = jax.random.split(rng_key, jax.local_device_count())
-  metrics, gt, out_vid = evaluate(
-      rng_key, state, model, data_itr,
-      eval_steps=256 // FLAGS.batch_size)  # hacky way of testing all 256
-  if jax.host_id() == 0:
-    write_summaries(summary_writer, metrics, 0, out_vid, gt)
-    video_summary = np.concatenate([gt, out_vid], axis=3)
-    with tf.io.gfile.GFile(f'{log_dir}/video.npy', 'w') as outfile:
-      np.save(outfile, video_summary)
+  while True:
+    state = checkpoints.restore_checkpoint(FLAGS.output_dir, state)
+    if int(state.step) == last_checkpoint:
+      time.sleep(60)  # sleep for 60 secs
+    else:
+      last_checkpoint = int(state.step)
+      state = jax_utils.replicate(state)
+      metrics, gt, out_vid = evaluate(
+          rng_key, state, model, data_itr, eval_steps=256 // FLAGS.batch_size)
+      if jax.host_id() == 0:
+        write_summaries(summary_writer, metrics, last_checkpoint, out_vid, gt)
+        video_summary = np.concatenate([gt, out_vid], axis=3)
+        with tf.io.gfile.GFile(f'{log_dir}/video.npy', 'w') as outfile:
+          np.save(outfile, video_summary)
 
 
 def main(argv):
   del argv  # Unused
   tf.enable_v2_behavior()
-  # make sure tf does not allocate gpu memory
-  tf.config.experimental.set_visible_devices([], 'GPU')
   eval_model()
   # Wait until computations are done before exiting
   jax.random.normal(jax.random.PRNGKey(0), ()).block_until_ready()

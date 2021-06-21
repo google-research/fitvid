@@ -1,8 +1,6 @@
-# JAXIDO Video Prediction Model
+# FitVid Video Prediction Model
 
-pip install -r requirements.txt
-
-python eval.py --output_dir path_to_checkpoint_dir
+Disclaimer: Not an official Google product.
 
 Required dependencies:
 
@@ -11,3 +9,4 @@ Required dependencies:
 - Linen
 - TensorFlow
 - ffmpeg
+

@@ -134,6 +134,7 @@ class ModularEncoder(nn.Module):
                              use_running_average=not self.training,
                              momentum=0.9,
                              epsilon=1e-5,
+                             axis_name='time',
                              dtype=self.dtype)
 
     skips = {}
@@ -170,6 +171,7 @@ class ModularDecoder(nn.Module):
                              use_running_average=not self.training,
                              momentum=0.9,
                              epsilon=1e-5,
+                             axis_name='time',
                              dtype=self.dtype)
 
     filters = np.prod(np.array(self.first_block_shape))
@@ -208,3 +210,28 @@ NVAE_DECODER = functools.partial(
     decoder_block=functools.partial(DecoderBlock, upsample=False),
     up_block=functools.partial(DecoderBlock, upsample=True))
 
+NVAE_ENCODER_VMAP = nn.vmap(
+    ModularEncoder,
+    in_axes=1,
+    out_axes=1,
+    variable_axes={'params': None, 'batch_stats': None},
+    split_rngs={'params': False, 'dropout': False, 'rng': False},
+    axis_name='time')
+
+NVAE_DECODER_VMAP = nn.vmap(
+    ModularDecoder,
+    in_axes=(1, None),
+    out_axes=1,
+    variable_axes={'params': None, 'batch_stats': None},
+    split_rngs={'params': False, 'dropout': False, 'rng': False},
+    axis_name='time')
+
+NVAE_ENCODER_VIDEO = functools.partial(
+    NVAE_ENCODER_VMAP,
+    encoder_block=functools.partial(EncoderBlock, downsample=False),
+    down_block=functools.partial(EncoderBlock, downsample=True))
+
+NVAE_DECODER_VIDEO = functools.partial(
+    NVAE_DECODER_VMAP,
+    decoder_block=functools.partial(DecoderBlock, upsample=False),
+    up_block=functools.partial(DecoderBlock, upsample=True))

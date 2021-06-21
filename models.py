@@ -23,8 +23,8 @@ from flax.nn import initializers
 import jax
 import jax.numpy as jnp
 
-import nvae
-import utils
+from fitvid import nvae
+from fitvid import utils
 
 
 class MultiGaussianLSTM(nn.Module):
@@ -66,12 +66,13 @@ class MultiGaussianLSTM(nn.Module):
     return states, (z, mean, logvar)
 
 
-class EncDec(nn.Module):
-  """Simple Encoder/Decoder video predictor."""
+
+
+class FitVid(nn.Module):
+  """FitVid video predictor."""
   training: bool
   stochastic: bool = True
   action_conditioned: bool = True
-  learned_prior: bool = True
   z_dim: int = 10
   g_dim: int = 128
   rnn_size: int = 256
@@ -80,11 +81,11 @@ class EncDec(nn.Module):
   dtype: int = jnp.float32
 
   def setup(self):
-    self.encoder = nvae.NVAE_ENCODER(
+    self.encoder = nvae.NVAE_ENCODER_VIDEO(
         training=self.training,
         stage_sizes=[2, 2, 2, 2],
         num_classes=self.g_dim)
-    self.decoder = nvae.NVAE_DECODER(
+    self.decoder = nvae.NVAE_DECODER_VIDEO(
         training=self.training,
         stage_sizes=[2, 2, 2, 2],
         first_block_shape=(8, 8, 512),
@@ -96,64 +97,72 @@ class EncDec(nn.Module):
     self.prior = MultiGaussianLSTM(
         hidden_size=self.rnn_size, output_size=self.z_dim, num_layers=1)
 
+  def get_input(self, hidden, action, z):
+    inp = [hidden]
+    if self.action_conditioned:
+      inp += [action]
+    if self.stochastic:
+      inp += [z]
+    return jnp.concatenate(inp, axis=1)
+
   def __call__(self, video, actions, step):
     batch_size, video_len = video.shape[0], video.shape[1]
-    frame_predictor_states = self.frame_predictor.init_states(batch_size)
-    posterior_states = self.posterior.init_states(batch_size)
-    prior_states = self.prior.init_states(batch_size)
+    pred_s = self.frame_predictor.init_states(batch_size)
+    post_s = self.posterior.init_states(batch_size)
+    prior_s = self.prior.init_states(batch_size)
+    kl = functools.partial(utils.kl_divergence, batch_size=batch_size)
 
-    h_seq = [self.encoder(video[:, i]) for i in range(video_len)]
+    # encode frames
+    hidden, skips = self.encoder(video)
+    # Keep the last available skip only
+    skips = {k: skips[k][:, self.n_past-1] for k in skips.keys()}
 
-    mse = 0.0
-    kld = 0.0
-    preds, means, logvars = [], [], []
-    x_pred = video[:, 0]
-    _, skip = h_seq[0]
-    for i in range(1, video_len):
-      h_target = h_seq[i][0]
-      h, s = h_seq[i-1]
-      if self.training and i <= self.n_past:
-        skip = s
-      if not self.training and i > self.n_past:
-        h, _ = self.encoder(x_pred)
-      posterior_states, (z_t, mu, logvar) = self.posterior(
-          h_target, posterior_states)
+    kld, means, logvars = 0.0, [], []
+    if self.training:
+      h_preds = []
+      for i in range(1, video_len):
+        h, h_target = hidden[:, i-1], hidden[:, i]
+        post_s, (z_t, mu, logvar) = self.posterior(h_target, post_s)
+        prior_s, (_, prior_mu, prior_logvar) = self.prior(h, prior_s)
 
-      if self.learned_prior:
-        prior_states, (prior_z_t, prior_mu, prior_logvar) = self.prior(
-            h, prior_states)
-      else:
-        prior_mu, prior_logvar = jnp.zeros_like(mu), jnp.zeros_like(logvar)
-        prior_z_t = jax.random.normal(self.make_rng('rng'), z_t.shape)
-      if not self.training:
-        z_t = prior_z_t
+        inp = self.get_input(h, actions[:, i-1], z_t)
+        pred_s, (_, h_pred, _) = self.frame_predictor(inp, pred_s)
+        h_pred = nn.sigmoid(h_pred)
+        h_preds.append(h_pred)
+        means.append(mu)
+        logvars.append(logvar)
+        kld += kl(mu, logvar, prior_mu, prior_logvar)
 
-      inp = [h]
-      if self.action_conditioned:
-        inp += [actions[:, i-1]]
-      if self.stochastic:
-        inp += [z_t]
-      inp = jnp.concatenate(inp, axis=1)
+      h_preds = jnp.stack(h_preds, axis=1)
+      preds = self.decoder(h_preds, skips)
 
-      frame_predictor_states, (_, h_pred, _) = self.frame_predictor(
-          inp, frame_predictor_states)
-      h_pred = nn.sigmoid(h_pred)
-      x_pred = self.decoder(h_pred, skip)
-      mse += utils.l2_loss(x_pred, video[:, i])
-      kld += utils.kl_divergence(
-          mu, logvar, prior_mu, prior_logvar, batch_size)
+    else:  # eval
+      preds, x_pred = [], None
+      for i in range(1, video_len):
+        h, h_target = hidden[:, i-1], hidden[:, i]
+        if i > self.n_past:
+          h = self.encoder(jnp.expand_dims(x_pred, 1))[0][:, 0]
 
-      preds.append(x_pred)
-      means.append(mu)
-      logvars.append(logvar)
+        post_s, (_, mu, logvar) = self.posterior(h_target, post_s)
+        prior_s, (z_t, prior_mu, prior_logvar) = self.prior(h, prior_s)
 
-    preds = jnp.stack(preds, axis=1)
+        inp = self.get_input(h, actions[:, i-1], z_t)
+        pred_s, (_, h_pred, _) = self.frame_predictor(inp, pred_s)
+        h_pred = nn.sigmoid(h_pred)
+        x_pred = self.decoder(jnp.expand_dims(h_pred, 1), skips)[:, 0]
+        preds.append(x_pred)
+        means.append(mu)
+        logvars.append(logvar)
+        kld += kl(mu, logvar, prior_mu, prior_logvar)
+
+      preds = jnp.stack(preds, axis=1)
+
     means = jnp.stack(means, axis=1)
     logvars = jnp.stack(logvars, axis=1)
-
+    mse = utils.l2_loss(preds, video[:, 1:])
     loss = mse + kld * self.beta
 
-    # Train Metrics
+    # Metrics
     metrics = {
         'hist/mean': means,
         'hist/logvars': logvars,
@@ -163,3 +172,4 @@ class EncDec(nn.Module):
     }
 
     return loss, preds, metrics
+
