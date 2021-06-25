@@ -22,8 +22,7 @@ import inspect
 import math
 import tensorflow.compat.v1 as tf1
 import tensorflow.compat.v2 as tf2
-from tensorflow.contrib import image as contrib_image
-from tensorflow.contrib import training as contrib_training
+from tensorflow_addons import image as contrib_image
 
 
 # This signifies the max integer that the controller RNN could predict for the
@@ -501,12 +500,13 @@ def level_to_arg(hparams, seed):
       'Sharpness': _enhance_level_to_arg,
       'ShearX': lambda level: _shear_level_to_arg(level, seed),
       'ShearY': lambda level: _shear_level_to_arg(level, seed),
-      'Cutout': lambda level: (int((level/_MAX_LEVEL) * hparams.cutout_const),),
       # pylint:disable=g-long-lambda
+      'Cutout': lambda level: (int((level/_MAX_LEVEL) * 
+                                   hparams['cutout_const']),),
       'TranslateX': lambda level: _translate_level_to_arg(
-          level, seed, hparams.translate_const),
+          level, seed, hparams['translate_const']),
       'TranslateY': lambda level: _translate_level_to_arg(
-          level, seed, hparams.translate_const),
+          level, seed, hparams['translate_const']),
       # pylint:enable=g-long-lambda
   }
 
@@ -555,8 +555,10 @@ def randaugment(image, num_layers, magnitude, seeds):
   """
   replace_value = [128] * 3
   tf1.logging.info('Using RandAug.')
-  augmentation_hparams = contrib_training.HParams(
-      cutout_const=10, translate_const=10)
+  augmentation_hparams = {
+      'cutout_const': 10, 
+      'translate_const' :10
+  }
   available_ops = [
       'AutoContrast',
       'Equalize',

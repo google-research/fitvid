@@ -49,7 +49,7 @@ def augment_dataset(dataset, augmentations):
     video = tf.cast(features['video'], tf.uint8)
     for aug_fn in augmentations:
       video = aug_fn(seeds, video)
-    video = tf.image.resize(video, (64, 64), antialias=True)
+    video = tf.image.resize(video, (64, 64))
     features['video'] = video
     return features
 
@@ -112,12 +112,13 @@ def load_dataset_robonet(batch_size, video_len, is_train):
   def get_robonet_test_filenames():
     testfiles = None
     if testfiles is None:
-      with tf.io.gfile.GFile('robonet_testset_filenames.txt', 'r') as f:
+      with tf.io.gfile.GFile('fitvid/robonet_testset_filenames.txt', 'r') as f:
         testfiles = f.read()
     testfiles = ([x.encode('ascii') for x in testfiles.split('\n') if x])
     return testfiles
 
   dataset_builder = tfds.builder('robonet/robonet_64')
+  dataset_builder.download_and_prepare()
   num_examples = dataset_builder.info.splits['train'].num_examples
   split_size = num_examples // jax.host_count()
   start = jax.host_id() * split_size
